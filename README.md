@@ -118,7 +118,7 @@ by default**, so nothing changes until you opt in — and each one is independen
 ## Quick start
 
 ```bash
-git clone <your-repo-url> AutoTyper
+git clone https://github.com/12Brian/AutoTyper.git AutoTyper
 cd AutoTyper
 
 python -m venv .venv
