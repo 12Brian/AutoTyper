@@ -1,0 +1,3 @@
+# AutoTyper runtime dependencies
+PySide6>=6.7,<7
+pynput>=1.7.6,<2

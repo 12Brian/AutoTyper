@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Keystroke forensics — what a web page can see</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    margin: 0 auto; padding: 24px; max-width: 900px;
+  }
+  h1 { font-size: 19px; margin: 0 0 4px; }
+  p.lead { margin: 0 0 20px; opacity: .7; }
+  textarea {
+    width: 100%; box-sizing: border-box; min-height: 130px;
+    font: 13px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace;
+    padding: 10px; border-radius: 8px; border: 1px solid #8884;
+    background: #8881; resize: vertical;
+  }
+  table { border-collapse: collapse; width: 100%; margin: 16px 0; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid #8883; }
+  th { font-weight: 600; opacity: .7; font-size: 12px; text-transform: uppercase;
+       letter-spacing: .04em; }
+  td:nth-child(n+2) { font-family: ui-monospace, Consolas, monospace; }
+  .bad { color: #c02b2b; font-weight: 600; }
+  .ok  { color: #1a7f4b; font-weight: 600; }
+  .warn{ color: #97600a; font-weight: 600; }
+  #log {
+    font: 12px/1.6 ui-monospace, Consolas, monospace;
+    background: #8881; border-radius: 8px; padding: 10px;
+    height: 180px; overflow-y: auto; white-space: pre;
+  }
+  button {
+    font: inherit; padding: 7px 14px; border-radius: 8px;
+    border: 1px solid #8886; background: #8882; cursor: pointer;
+  }
+  .hint { font-size: 12px; opacity: .65; margin-top: 6px; }
+</style>
+</head>
+<body>
+
+<h1>Keystroke forensics</h1>
+<p class="lead">
+  Type in the box by hand first, note the values, then let AutoTyper type the same
+  text. Everything below is information the page receives through ordinary DOM
+  events — no permissions, no fingerprinting.
+</p>
+
+<textarea id="target" placeholder="Click here and type…"></textarea>
+<p class="hint">
+  Open this file directly in your browser (<code>file://</code>). It sends
+  nothing anywhere — everything stays in the page.
+</p>
+
+<table>
+  <thead>
+    <tr><th>Signal</th><th>Last value</th><th>Verdict</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>isTrusted</td>          <td id="v-trusted">—</td><td id="j-trusted"></td></tr>
+    <tr><td>event.code</td>         <td id="v-code">—</td>   <td id="j-code"></td></tr>
+    <tr><td>event.keyCode</td>      <td id="v-keycode">—</td><td id="j-keycode"></td></tr>
+    <tr><td>Dwell (down→up)</td>    <td id="v-dwell">—</td>  <td id="j-dwell"></td></tr>
+    <tr><td>Inter-key interval</td> <td id="v-gap">—</td>    <td id="j-gap"></td></tr>
+    <tr><td>Corrections / Backspace</td><td id="v-typo">0</td><td id="j-typo"></td></tr>
+    <tr><td>Pointer movement</td>   <td id="v-mouse">0</td>  <td id="j-mouse"></td></tr>
+  </tbody>
+</table>
+
+<button id="clear">Clear log</button>
+<div id="log"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const logEl = $("log");
+let lastDown = 0, downTime = 0, backspaces = 0, mouseMoves = 0;
+
+function log(line) {
+  logEl.textContent += line + "\n";
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function verdict(id, text, cls) {
+  const el = $(id);
+  el.textContent = text;
+  el.className = cls;
+}
+
+// keydown: when the key goes down, and what metadata accompanies it.
+$("target").addEventListener("keydown", (e) => {
+  downTime = performance.now();
+  const gap = lastDown ? downTime - lastDown : 0;
+  lastDown = downTime;
+
+  $("v-trusted").textContent = String(e.isTrusted);
+  $("v-code").textContent = JSON.stringify(e.code);
+  $("v-keycode").textContent = String(e.keyCode);
+
+  verdict("j-trusted", e.isTrusted ? "trusted" : "SYNTHETIC (script)",
+          e.isTrusted ? "ok" : "bad");
+
+  // Physical keyboards always report a code ("KeyA", "Enter", "Space").
+  // Unicode/VK_PACKET injection reports an empty code.
+  const emptyCode = e.code === "";
+  verdict("j-code", emptyCode ? "EMPTY → injected" : "physical key",
+          emptyCode ? "bad" : "ok");
+
+  // 229 is VK_PACKET: the Windows "injected text" virtual key.
+  const packet = e.keyCode === 229;
+  verdict("j-keycode", packet ? "229 → VK_PACKET" : String(e.keyCode),
+          packet ? "bad" : "ok");
+
+  if (gap > 0) {
+    $("v-gap").textContent = gap.toFixed(1) + " ms";
+    verdict("j-gap", gap < 5 ? "sub-5 ms → automated" : "plausible",
+            gap < 5 ? "bad" : "ok");
+  }
+
+  if (e.key === "Backspace") backspaces++;
+  $("v-typo").textContent = String(backspaces);
+  verdict("j-typo", backspaces === 0 ? "no human corrections" : "made corrections",
+          backspaces === 0 ? "warn" : "ok");
+
+  log(`down key=${JSON.stringify(e.key)} code=${JSON.stringify(e.code)} ` +
+      `keyCode=${e.keyCode} trusted=${e.isTrusted} gap=${gap.toFixed(1)}ms`);
+});
+
+// keyup: the down→up interval is dwell time.
+$("target").addEventListener("keyup", (e) => {
+  const dwell = performance.now() - downTime;
+  $("v-dwell").textContent = dwell.toFixed(1) + " ms";
+  // Human dwell is typically 50–150 ms. Injected press+release is near-zero.
+  const synthetic = dwell < 8;
+  verdict("j-dwell", synthetic ? "sub-8 ms → injected" : "plausible",
+          synthetic ? "bad" : "ok");
+  log(`up   key=${JSON.stringify(e.key)} dwell=${dwell.toFixed(1)}ms`);
+});
+
+// A human filling a form almost always moves the pointer at least once.
+document.addEventListener("mousemove", () => {
+  mouseMoves++;
+  $("v-mouse").textContent = String(mouseMoves);
+  verdict("j-mouse", mouseMoves === 0 ? "no pointer activity" : "present",
+          mouseMoves === 0 ? "warn" : "ok");
+});
+
+$("clear").addEventListener("click", () => {
+  logEl.textContent = "";
+  backspaces = 0; mouseMoves = 0; lastDown = 0;
+  $("v-typo").textContent = "0";
+  $("v-mouse").textContent = "0";
+  for (const [v, j] of [["v-trusted","j-trusted"],["v-code","j-code"],
+                        ["v-keycode","j-keycode"],["v-dwell","j-dwell"],
+                        ["v-gap","j-gap"]]) {
+    $(v).textContent = "—";
+    $(j).textContent = "";
+    $(j).className = "";
+  }
+});
+
+log("Ready. Type by hand first, note the values, then run AutoTyper.");
+</script>
+</body>
+</html>
